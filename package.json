@@ -1,0 +1,13 @@
+{
+  "name": "silex",
+  "private": true,
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "bun run --cwd server dev",
+    "build": "bun run --cwd web build",
+    "start": "bun run --cwd server start"
+  }
+}

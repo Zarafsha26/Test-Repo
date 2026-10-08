@@ -1,0 +1,15 @@
+{
+  "name": "@silex/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "hono": "^4.13.13"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2"
+  }
+}
