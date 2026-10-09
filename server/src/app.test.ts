@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createApp } from './app';
 import type { LLMAdapter, ChatInput } from './ai/adapter';
 import { store } from './store/store';
@@ -295,5 +295,71 @@ describe('diagnostics', () => {
     expect(payload.ok).toBe(false);
     expect(JSON.stringify(payload)).not.toContain('secret');
     expect(payload.steps.at(-1).ok).toBe(false);
+  });
+});
+
+describe('endpoint serving a web page', () => {
+  let htmlServer: ReturnType<typeof Bun.serve> | null = null;
+
+  const startHtmlServer = (): string => {
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch: () =>
+        new Response('<!DOCTYPE html><html><body>marketing site</body></html>', {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        }),
+    });
+    htmlServer = server;
+    return `http://127.0.0.1:${server.port}/`;
+  };
+
+  beforeEach(() => {
+    store.reset();
+  });
+
+  afterEach(() => {
+    htmlServer?.stop(true);
+    htmlServer = null;
+  });
+
+  test('creating an agent against a web page is rejected with a clear error', async () => {
+    const url = startHtmlServer();
+    const app = createApp(makeAdapter());
+    const response = await app.request('/api/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Web Page Agent', purpose: 'Points at a site.', connection: url }),
+    });
+    expect(response.status).toBe(400);
+    const payload = await json(response);
+    expect(payload.error).toContain('web page');
+    expect(store.listCustomAgents()).toHaveLength(0);
+  });
+
+  test('a run against a web page endpoint saves an error record, never a score', async () => {
+    const url = startHtmlServer();
+    store.addCustomAgent({
+      id: 'custom_html1',
+      name: 'Web Page Agent',
+      purpose: 'Points at a site.',
+      connection: url,
+      createdAt: Date.now(),
+    });
+    const app = createApp(makeAdapter());
+    const response = await runRequest(app, {
+      agentId: 'custom_html1',
+      scenario: 'Can you solve my problem?',
+    });
+    expect(response.status).toBe(503);
+    const payload = await json(response);
+    expect(payload.stage).toBe('connection');
+    expect(payload.test.status).toBe('error');
+    expect(payload.test.overall).toBe(0);
+    expect(payload.error).toContain('web page');
+    const stored = store.read().tests.find((test) => test.agentId === 'custom_html1');
+    expect(stored?.status).toBe('error');
+    expect(stored?.response).toBe('');
+    expect(stored?.issueId).toBeNull();
   });
 });

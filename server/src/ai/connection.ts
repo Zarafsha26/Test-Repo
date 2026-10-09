@@ -82,6 +82,15 @@ export async function diagnoseConnection(
         ok: true,
         detail: `Answered with HTTP ${response.status} in ${elapsed}s.`,
       });
+      const contentType = response.headers.get('content-type') ?? '';
+      if (contentType.includes('text/html')) {
+        steps.push({
+          name: 'Agent reply format',
+          ok: false,
+          detail:
+            'This address serves a web page (HTML), not an agent API — it cannot reply to test prompts.',
+        });
+      }
     } else if (response.status === 405) {
       steps.push({
         name: 'Endpoint responded',

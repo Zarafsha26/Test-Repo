@@ -222,6 +222,11 @@ export async function callAgentEndpoint(params: {
   }
   text = text.trim();
   if (!text) throw new Error('The agent endpoint returned an empty response.');
+  if (contentType.includes('text/html') || /^\s*<(!doctype|html)\b/i.test(text)) {
+    throw new Error(
+      'This address served a web page (HTML) instead of an agent reply. Point the agent at an API that answers with JSON such as {"reply": "..."}, or clear the connection to run it on the local engine.',
+    );
+  }
 
   return {
     text,

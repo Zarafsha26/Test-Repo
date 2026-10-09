@@ -71,6 +71,20 @@ describe('diagnoseConnection', () => {
     expect(result.steps[1].detail).toContain('404');
   });
 
+  test('flags endpoints that serve a web page instead of an agent API', async () => {
+    const url = listen(
+      () =>
+        new Response('<!DOCTYPE html><html><body></body></html>', {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        }),
+    );
+    const result = await diagnoseConnection(url);
+    expect(result.ok).toBe(false);
+    const step = result.steps.find((entry) => entry.name === 'Agent reply format');
+    expect(step?.ok).toBe(false);
+    expect(step?.detail).toContain('web page');
+  });
+
   test('fails clearly when nothing is listening', async () => {
     const result = await diagnoseConnection('http://127.0.0.1:9/');
     expect(result.ok).toBe(false);
