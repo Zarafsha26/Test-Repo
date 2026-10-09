@@ -1,4 +1,4 @@
-import { AGENTS, allAgents } from './agents';
+import { allAgents } from './agents';
 import type { Database, AgentMetrics, Issue, TestRecord } from './types';
 
 const RECENT_WINDOW = 10;
@@ -78,7 +78,9 @@ export function buildOverview(
     );
 
   const ready =
-    AGENTS.every((agent) => agentMetrics(db, agent.id) !== null) &&
+    allAgents()
+      .filter((agent) => !agent.custom)
+      .every((agent) => agentMetrics(db, agent.id) !== null) &&
     db.calibratedAt !== null;
   const calibrating = !ready || progress.total > 0;
 

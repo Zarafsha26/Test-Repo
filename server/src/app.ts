@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Hono } from 'hono';
-import { agentById, AGENTS, allAgents, AGENT_STATUSES } from './domain/agents';
+import { agentById, allAgents, AGENT_STATUSES } from './domain/agents';
 import {
   agentMetrics,
   agentTests,
@@ -47,6 +47,55 @@ const createTestInput = (body: unknown): { agentId: string; scenario: string } =
   return { agentId, scenario };
 };
 
+type AgentInput = { name: string; purpose: string; connection: string };
+
+const isInputError = (
+  value: AgentInput | { error: string },
+): value is { error: string } => 'error' in value;
+
+function validateAgentBody(body: unknown): AgentInput | { error: string } {
+  const record = (body ?? {}) as { name?: unknown; purpose?: unknown; connection?: unknown };
+  const name = typeof record.name === 'string' ? record.name.trim() : '';
+  const purpose = typeof record.purpose === 'string' ? record.purpose.trim() : '';
+  const connection =
+    typeof record.connection === 'string' ? record.connection.trim() : '';
+  if (name.length < 2 || name.length > 60) {
+    return { error: 'Enter an agent name of 2 to 60 characters.' };
+  }
+  if (purpose.length < 3 || purpose.length > 200) {
+    return { error: 'Describe the purpose in 3 to 200 characters.' };
+  }
+  if (connection) {
+    try {
+      const url = new URL(connection);
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
+    } catch {
+      return {
+        error:
+          'Enter a valid connection URL starting with http:// or https://, or leave it empty to use the local engine.',
+      };
+    }
+  }
+  return { name, purpose, connection };
+}
+
+async function probeConnection(url: string): Promise<string | null> {
+  try {
+    await fetch(url, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(3000),
+      redirect: 'follow',
+    });
+    return null;
+  } catch (error) {
+    const name = (error as Error)?.name;
+    const timedOut = name === 'TimeoutError' || name === 'AbortError';
+    return timedOut
+      ? `We could not reach ${url} within 3 seconds. Check the connection URL, or leave it empty to use the local engine.`
+      : `We could not reach ${url}. Check the connection URL, or leave it empty to use the local engine.`;
+  }
+}
+
 export function createApp(adapter: LLMAdapter) {
   const app = new Hono<Env>();
 
@@ -81,6 +130,7 @@ export function createApp(adapter: LLMAdapter) {
       name: agent.name,
       role: agent.role,
       description: agent.description,
+      connection: agent.connection ?? '',
       metrics: agentMetrics(db, agent.id),
       status: agentStatus(db, agent),
     }));
@@ -88,34 +138,23 @@ export function createApp(adapter: LLMAdapter) {
   });
 
   app.post('/api/agents', async (context) => {
-    let body: { name?: unknown; purpose?: unknown; connection?: unknown };
+    let body: unknown;
     try {
       body = await context.req.json();
     } catch {
       return context.json({ error: 'The request body could not be read.' }, 400);
     }
-    const name = typeof body.name === 'string' ? body.name.trim() : '';
-    const purpose = typeof body.purpose === 'string' ? body.purpose.trim() : '';
-    const connection = typeof body.connection === 'string' ? body.connection.trim() : '';
-    if (name.length < 2 || name.length > 60) {
-      return context.json({ error: 'Enter an agent name of 2 to 60 characters.' }, 400);
-    }
-    if (purpose.length < 3 || purpose.length > 200) {
-      return context.json({ error: 'Describe the purpose in 3 to 200 characters.' }, 400);
-    }
-    if (connection) {
-      try {
-        const url = new URL(connection);
-        if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
-      } catch {
-        return context.json({ error: 'Enter a valid connection URL, or leave it empty.' }, 400);
-      }
+    const input = validateAgentBody(body);
+    if (isInputError(input)) return context.json({ error: input.error }, 400);
+    if (input.connection) {
+      const probeError = await probeConnection(input.connection);
+      if (probeError) return context.json({ error: probeError }, 400);
     }
     const agent = {
       id: `custom_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
-      name,
-      purpose,
-      connection,
+      name: input.name,
+      purpose: input.purpose,
+      connection: input.connection,
       createdAt: Date.now(),
     };
     store.addCustomAgent(agent);
@@ -144,6 +183,7 @@ export function createApp(adapter: LLMAdapter) {
       name: agent.name,
       role: agent.role,
       description: agent.description,
+      connection: agent.connection ?? '',
       metrics: agentMetrics(db, agent.id),
       status: agentStatus(db, agent),
       recentTests: recent,
@@ -152,6 +192,66 @@ export function createApp(adapter: LLMAdapter) {
         .slice(0, 3)
         ,
     });
+  });
+
+  app.patch('/api/agents/:id', async (context) => {
+    const id = context.req.param('id');
+    const agent = agentById(id);
+    if (!agent) return context.json({ error: 'Agent not found.' }, 404);
+
+    let body: Record<string, unknown>;
+    try {
+      body = await context.req.json();
+    } catch {
+      return context.json({ error: 'The request body could not be read.' }, 400);
+    }
+
+    const merged = {
+      name: body.name !== undefined ? body.name : agent.name,
+      purpose: body.purpose !== undefined ? body.purpose : agent.description,
+      connection: body.connection !== undefined ? body.connection : (agent.connection ?? ''),
+    };
+    const input = validateAgentBody(merged);
+    if (isInputError(input)) return context.json({ error: input.error }, 400);
+    const connectionChanged = input.connection !== (agent.connection ?? '');
+    if (input.connection && connectionChanged) {
+      const probeError = await probeConnection(input.connection);
+      if (probeError) return context.json({ error: probeError }, 400);
+    }
+
+    if (agent.custom) {
+      const updated = store.updateCustomAgent(id, input);
+      if (!updated) return context.json({ error: 'Agent not found.' }, 404);
+    } else {
+      store.setAgentOverride(id, input);
+    }
+
+    const db = store.read();
+    const current = agentById(id)!;
+    return context.json({
+      item: {
+        id: current.id,
+        name: current.name,
+        role: current.role,
+        description: current.description,
+        connection: current.connection ?? '',
+        metrics: agentMetrics(db, current.id),
+        status: agentStatus(db, current),
+      },
+    });
+  });
+
+  app.delete('/api/agents/:id', (context) => {
+    const id = context.req.param('id');
+    const agent = agentById(id);
+    if (!agent) return context.json({ error: 'Agent not found.' }, 404);
+    if (agent.custom) {
+      const removed = store.removeCustomAgent(id);
+      if (!removed) return context.json({ error: 'Agent not found.' }, 404);
+    } else {
+      store.hideAgent(id);
+    }
+    return context.json({ ok: true });
   });
 
   app.get('/api/tests', (context) => {

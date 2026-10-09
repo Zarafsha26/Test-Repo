@@ -1,5 +1,5 @@
 import { callAgentEndpoint, type LLMAdapter } from '../ai/adapter';
-import { AGENTS, type AgentDefinition } from './agents';
+import { allAgents, type AgentDefinition } from './agents';
 import { evaluate } from '../eval/evaluator';
 import { store } from '../store/store';
 import type { Issue, TestRecord } from './types';
@@ -116,7 +116,7 @@ export async function runCalibration(adapter: LLMAdapter): Promise<void> {
   state = { done: 0, total: BASELINE_PROBES.length, running: true };
 
   for (const probe of BASELINE_PROBES) {
-    const agent = AGENTS.find((candidate) => candidate.id === probe.agentId);
+    const agent = allAgents().find((candidate) => candidate.id === probe.agentId);
     if (!agent) continue;
     try {
       await runOne(adapter, agent, probe.scenario, 'baseline', probe.criteria);

@@ -98,10 +98,27 @@ export const AGENT_STATUSES = {
   calibrating: 'Calibrating',
 } as const;
 
-export const allAgents = (): AgentDefinition[] => [
-  ...AGENTS,
-  ...store.listCustomAgents().map(customDefinition),
-];
+const applyOverrides = (agent: AgentDefinition): AgentDefinition => {
+  const override = store.read().agentOverrides[agent.id];
+  if (!override) return agent;
+  return {
+    ...agent,
+    name: override.name ?? agent.name,
+    description: override.purpose ?? agent.description,
+    connection:
+      override.connection !== undefined
+        ? override.connection || undefined
+        : agent.connection,
+  };
+};
+
+export const allAgents = (): AgentDefinition[] => {
+  const hidden = store.read().hiddenAgentIds;
+  return [
+    ...AGENTS.filter((agent) => !hidden.includes(agent.id)).map(applyOverrides),
+    ...store.listCustomAgents().map(customDefinition),
+  ];
+};
 
 export const agentById = (id: string): AgentDefinition | undefined =>
   allAgents().find((agent) => agent.id === id);

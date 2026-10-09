@@ -58,6 +58,7 @@ export type AgentSummary = {
   name: string;
   role: string;
   description: string;
+  connection?: string;
   metrics: AgentMetrics | null;
   status?: string;
 };
@@ -142,6 +143,18 @@ export const api = {
     request<{ item: AgentSummary }>('/api/agents', {
       method: 'POST',
       body: JSON.stringify(input),
+    }),
+  updateAgent: (
+    id: string,
+    input: { name: string; purpose: string; connection: string },
+  ) =>
+    request<{ item: AgentSummary }>(`/api/agents/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  removeAgent: (id: string) =>
+    request<{ ok: boolean }>(`/api/agents/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     }),
   agent: (id: string) => request<AgentDetail>(`/api/agents/${id}`),
   tests: (agentId?: string) =>

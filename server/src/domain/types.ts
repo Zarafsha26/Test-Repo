@@ -50,11 +50,19 @@ export type CustomAgent = {
   createdAt: number;
 };
 
+export type AgentOverride = {
+  name?: string;
+  purpose?: string;
+  connection?: string;
+};
+
 export type Database = {
   version: 1;
   tests: TestRecord[];
   issues: Issue[];
   customAgents: CustomAgent[];
+  agentOverrides: Record<string, AgentOverride>;
+  hiddenAgentIds: string[];
   calibratedAt: number | null;
 };
 

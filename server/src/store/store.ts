@@ -1,6 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { CustomAgent, Database, Issue, TestRecord } from '../domain/types';
+import type {
+  AgentOverride,
+  CustomAgent,
+  Database,
+  Issue,
+  TestRecord,
+} from '../domain/types';
 
 const DATA_DIR = process.env.SILEX_DATA_DIR ?? join(import.meta.dir, '..', '..', 'data');
 const DB_PATH = join(DATA_DIR, 'db.json');
@@ -10,6 +16,8 @@ const emptyDatabase = (): Database => ({
   tests: [],
   issues: [],
   customAgents: [],
+  agentOverrides: {},
+  hiddenAgentIds: [],
   calibratedAt: null,
 });
 
@@ -20,12 +28,17 @@ function load(): Database {
   if (cache) return cache;
   try {
     if (existsSync(DB_PATH)) {
-      const parsed = JSON.parse(readFileSync(DB_PATH, 'utf8')) as Database;
+      const parsed = JSON.parse(readFileSync(DB_PATH, 'utf8')) as Partial<Database>;
       cache = {
         version: 1,
         tests: Array.isArray(parsed.tests) ? parsed.tests : [],
         issues: Array.isArray(parsed.issues) ? parsed.issues : [],
         customAgents: Array.isArray(parsed.customAgents) ? parsed.customAgents : [],
+        agentOverrides:
+          parsed.agentOverrides && typeof parsed.agentOverrides === 'object'
+            ? parsed.agentOverrides
+            : {},
+        hiddenAgentIds: Array.isArray(parsed.hiddenAgentIds) ? parsed.hiddenAgentIds : [],
         calibratedAt: parsed.calibratedAt ?? null,
       };
       return cache;
@@ -72,6 +85,44 @@ export const store = {
   addCustomAgent(agent: CustomAgent): void {
     load().customAgents.push(agent);
     flush();
+  },
+
+  updateCustomAgent(
+    id: string,
+    patch: { name: string; purpose: string; connection: string },
+  ): boolean {
+    const agent = load().customAgents.find((item) => item.id === id);
+    if (!agent) return false;
+    agent.name = patch.name;
+    agent.purpose = patch.purpose;
+    agent.connection = patch.connection;
+    flush();
+    return true;
+  },
+
+  removeCustomAgent(id: string): boolean {
+    const db = load();
+    const before = db.customAgents.length;
+    db.customAgents = db.customAgents.filter((item) => item.id !== id);
+    if (db.customAgents.length === before) return false;
+    flush();
+    return true;
+  },
+
+  setAgentOverride(id: string, patch: AgentOverride): void {
+    const db = load();
+    db.agentOverrides[id] = { ...db.agentOverrides[id], ...patch };
+    flush();
+  },
+
+  hideAgent(id: string): void {
+    const db = load();
+    if (!db.hiddenAgentIds.includes(id)) db.hiddenAgentIds.push(id);
+    flush();
+  },
+
+  isAgentHidden(id: string): boolean {
+    return load().hiddenAgentIds.includes(id);
   },
 
   listIssues(): Issue[] {

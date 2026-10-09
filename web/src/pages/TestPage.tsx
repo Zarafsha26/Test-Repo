@@ -64,18 +64,29 @@ export function TestPage({
   const resultRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     api
       .agents()
       .then((data) => {
+        if (cancelled) return;
         setAgents(data.items);
-        setAgentId((current) => current || data.items[0]?.id || '');
+        setAgentId((current) => {
+          if (presetAgentId && data.items.some((agent) => agent.id === presetAgentId)) {
+            return presetAgentId;
+          }
+          if (current && data.items.some((agent) => agent.id === current)) {
+            return current;
+          }
+          return data.items[0]?.id ?? '';
+        });
       })
-      .catch(() => onToast('Could not load agents.'));
-  }, [onToast]);
-
-  useEffect(() => {
-    if (presetAgentId) setAgentId(presetAgentId);
-  }, [presetAgentId]);
+      .catch(() => {
+        if (!cancelled) onToast('Could not load agents.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [presetAgentId, onToast]);
 
   const loadHistory = useCallback(async () => {
     if (!agentId) return;
@@ -109,6 +120,17 @@ export function TestPage({
         error instanceof Error ? error.message : 'The test could not be run.';
       setError(message);
       onToast(message);
+      try {
+        const data = await api.agents();
+        setAgents(data.items);
+        setAgentId((current) =>
+          current && data.items.some((agent) => agent.id === current)
+            ? current
+            : (data.items[0]?.id ?? ''),
+        );
+      } catch {
+        // agent refresh is best-effort after a failed test
+      }
     } finally {
       setRunning(false);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 60);
@@ -202,10 +224,12 @@ export function TestPage({
                   below — press Retry to run it again.
                 </p>
               </div>
-              <PrimaryButton onClick={() => void run()}>
-                <RefreshCw className="h-4 w-4" />
-                Retry test
-              </PrimaryButton>
+              {Boolean(agentId) && scenario.trim().length >= 10 ? (
+                <PrimaryButton onClick={() => void run()}>
+                  <RefreshCw className="h-4 w-4" />
+                  Retry test
+                </PrimaryButton>
+              ) : null}
             </div>
           </Card>
         </div>

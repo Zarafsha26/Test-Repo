@@ -8,7 +8,9 @@ import {
   Coins,
   Play,
   Plus,
+  Settings,
   Timer,
+  Trash2,
 } from 'lucide-react';
 import {
   Area,
@@ -103,6 +105,7 @@ function AgentsList({
 }) {
   const [items, setItems] = useState<AgentSummary[] | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [settingsAgent, setSettingsAgent] = useState<AgentSummary | null>(null);
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
   const [connection, setConnection] = useState('');
@@ -179,10 +182,18 @@ function AgentsList({
       ) : (
         <Card className="divide-y divide-line-soft overflow-hidden">
           {items.map((agent, index) => (
-            <button
+            <div
               key={agent.id}
+              role="button"
+              tabIndex={0}
               onClick={() => onOpenAgent(agent.id)}
-              className="group flex w-full items-center gap-4 px-5 py-4 text-left transition hover:bg-[#fafbfc]"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onOpenAgent(agent.id);
+                }
+              }}
+              className="group flex w-full cursor-pointer items-center gap-4 px-5 py-4 text-left transition hover:bg-[#fafbfc]"
             >
               <div
                 className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-sm ${
@@ -217,11 +228,23 @@ function AgentsList({
                 </p>
               </div>
               <StatusBadge agent={agent} />
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSettingsAgent(agent);
+                }}
+                onKeyDown={(event) => event.stopPropagation()}
+                aria-label={`Settings for ${agent.name}`}
+                title="Agent settings"
+                className="rounded-lg p-2 text-ink-faint transition hover:bg-line-soft hover:text-ink"
+              >
+                <Settings className="h-4 w-4" />
+              </button>
               <ChevronRight
                 className="h-4 w-4 text-ink-faint transition group-hover:translate-x-0.5 group-hover:text-ink"
                 strokeWidth={2}
               />
-            </button>
+            </div>
           ))}
         </Card>
       )}
@@ -292,6 +315,27 @@ function AgentsList({
           </div>
         </div>
       </Modal>
+
+      {settingsAgent ? (
+        <AgentSettingsModal
+          agent={settingsAgent}
+          onClose={() => setSettingsAgent(null)}
+          onSaved={async (item) => {
+            setItems((current) =>
+              current ? current.map((entry) => (entry.id === item.id ? item : entry)) : current,
+            );
+            void load();
+          }}
+          onRemoved={() => {
+            setItems((current) =>
+              current ? current.filter((entry) => entry.id !== settingsAgent.id) : current,
+            );
+            setSettingsAgent(null);
+            void load();
+          }}
+          onToast={onToast}
+        />
+      ) : null}
     </div>
   );
 }
@@ -361,6 +405,7 @@ function AgentDetailPage({
   onToast: (message: string) => void;
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -417,10 +462,20 @@ function AgentDetailPage({
             <p className="mt-0.5 max-w-xl text-sm text-ink-soft">{detail.description}</p>
           </div>
         </div>
-        <PrimaryButton onClick={() => onRunTest(detail.id)}>
-          <Play className="h-4 w-4 fill-current" />
-          Run Test
-        </PrimaryButton>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowSettings(true)}
+            aria-label="Agent settings"
+            title="Agent settings"
+            className="rounded-lg border border-line bg-panel p-2.5 text-ink-soft transition hover:text-ink"
+          >
+            <Settings className="h-4.5 w-4.5" />
+          </button>
+          <PrimaryButton onClick={() => onRunTest(detail.id)}>
+            <Play className="h-4 w-4 fill-current" />
+            Run Test
+          </PrimaryButton>
+        </div>
       </header>
 
       {metrics ? (
@@ -575,6 +630,212 @@ function AgentDetailPage({
           </Card>
         </section>
       ) : null}
+
+      {showSettings ? (
+        <AgentSettingsModal
+          agent={detail}
+          onClose={() => setShowSettings(false)}
+          onSaved={async () => {
+            await load();
+          }}
+          onRemoved={() => onBack()}
+          onToast={onToast}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function AgentSettingsModal({
+  agent,
+  onClose,
+  onSaved,
+  onRemoved,
+  onToast,
+}: {
+  agent: AgentSummary;
+  onClose: () => void;
+  onSaved: (item: AgentSummary) => void | Promise<void>;
+  onRemoved: () => void;
+  onToast: (message: string) => void;
+}) {
+  const [name, setName] = useState(agent.name);
+  const [purpose, setPurpose] = useState(agent.description);
+  const [connection, setConnection] = useState(agent.connection ?? '');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  const inputClass =
+    'mt-1.5 w-full rounded-lg border border-line bg-[#fcfcfd] px-3.5 py-2.5 text-sm text-ink placeholder:text-ink-faint focus:border-[#d0d5dd] focus:bg-white focus:outline-none focus:ring-2 focus:ring-ink/10';
+
+  const validate = (): string | null => {
+    const trimmedName = name.trim();
+    const trimmedPurpose = purpose.trim();
+    const trimmedConnection = connection.trim();
+    if (trimmedName.length < 2 || trimmedName.length > 60) {
+      return 'Enter an agent name of 2 to 60 characters.';
+    }
+    if (trimmedPurpose.length < 3 || trimmedPurpose.length > 200) {
+      return 'Describe what this agent does in 3 to 200 characters.';
+    }
+    if (trimmedConnection) {
+      try {
+        const url = new URL(trimmedConnection);
+        if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
+      } catch {
+        return 'Enter a valid connection URL starting with http:// or https://, or leave it empty to use the local engine.';
+      }
+    }
+    return null;
+  };
+
+  const save = async () => {
+    setFormError(null);
+    const invalid = validate();
+    if (invalid) return setFormError(invalid);
+    setSaving(true);
+    try {
+      const { item } = await api.updateAgent(agent.id, {
+        name: name.trim(),
+        purpose: purpose.trim(),
+        connection: connection.trim(),
+      });
+      await onSaved(item);
+      onToast(`Settings saved for ${item.name}.`);
+      onClose();
+    } catch (error) {
+      setFormError(
+        error instanceof Error ? error.message : 'Could not save the settings.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    setRemoving(true);
+    try {
+      await api.removeAgent(agent.id);
+      onToast(`${agent.name} removed.`);
+      onRemoved();
+    } catch (error) {
+      setFormError(
+        error instanceof Error ? error.message : 'Could not remove the agent.',
+      );
+      setConfirming(false);
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  return (
+    <>
+      <Modal
+        open
+        onClose={() => !saving && onClose()}
+        title="Agent Settings"
+        subtitle="Update how this agent is identified and where it runs."
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-[13px] font-medium text-ink-soft" htmlFor="settings-agent-name">
+              Agent Name
+            </label>
+            <input
+              id="settings-agent-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className="block text-[13px] font-medium text-ink-soft" htmlFor="settings-agent-purpose">
+              Purpose
+            </label>
+            <input
+              id="settings-agent-purpose"
+              value={purpose}
+              onChange={(event) => setPurpose(event.target.value)}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className="block text-[13px] font-medium text-ink-soft" htmlFor="settings-agent-connection">
+              Connection
+            </label>
+            <input
+              id="settings-agent-connection"
+              value={connection}
+              onChange={(event) => setConnection(event.target.value)}
+              placeholder="https://your-agent.example.com/test — or leave empty"
+              className={inputClass}
+            />
+            <p className="mt-1.5 text-xs text-ink-faint">
+              Point Silex at where your agent runs. Leave empty to test with the local engine.
+            </p>
+          </div>
+          {formError ? (
+            <div className="flex items-start gap-2 rounded-lg bg-risk-soft px-3 py-2.5 text-[13px] text-risk">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{formError}</span>
+            </div>
+          ) : null}
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <button
+              onClick={() => {
+                setFormError(null);
+                setConfirming(true);
+              }}
+              disabled={saving}
+              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium text-risk transition hover:bg-risk-soft"
+            >
+              <Trash2 className="h-4 w-4" />
+              Remove agent
+            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={onClose}
+                disabled={saving}
+                className="rounded-lg border border-line px-4 py-2.5 text-sm font-medium text-ink-soft transition hover:text-ink"
+              >
+                Cancel
+              </button>
+              <PrimaryButton onClick={() => void save()} loading={saving}>
+                Save changes
+              </PrimaryButton>
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={confirming}
+        onClose={() => !removing && setConfirming(false)}
+        title={`Remove ${agent.name}?`}
+      >
+        <p className="text-sm leading-relaxed text-ink-soft">
+          This agent disappears from the agents list and from test selection. Its
+          past test results and issues are kept.
+        </p>
+        <div className="flex justify-end gap-2 pt-5">
+          <button
+            onClick={() => setConfirming(false)}
+            disabled={removing}
+            className="rounded-lg border border-line px-4 py-2.5 text-sm font-medium text-ink-soft transition hover:text-ink"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => void remove()}
+            disabled={removing}
+            className="rounded-lg bg-risk px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-95 disabled:opacity-60"
+          >
+            {removing ? 'Removing…' : 'Remove agent'}
+          </button>
+        </div>
+      </Modal>
+    </>
   );
 }
