@@ -30,10 +30,32 @@ const PORT = Number(process.env.SILEX_LLM_PORT ?? '4571');
 const BASE_URL = process.env.SILEX_LLM_URL ?? `http://${HOST}:${PORT}`;
 const PROVIDER_ID = process.env.SILEX_LLM_PROVIDER ?? 'opencode';
 const MODEL_ID = process.env.SILEX_LLM_MODEL ?? 'mimo-v2.6-flash-free';
-const CALL_TIMEOUT_MS = Number(process.env.SILEX_LLM_TIMEOUT_MS ?? '90000');
+const CALL_TIMEOUT_MS = Number(process.env.SILEX_LLM_TIMEOUT_MS ?? '60000');
 const ENDPOINT_TIMEOUT_MS = Number(process.env.SILEX_ENDPOINT_TIMEOUT_MS ?? '60000');
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function timedFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  busyLabel: string,
+): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (error) {
+    const name = (error as Error)?.name;
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      const seconds = Math.round(timeoutMs / 1000);
+      throw new Error(
+        `${busyLabel} took longer than ${seconds} second${seconds === 1 ? '' : 's'}. The local engine may be busy — try running the test again.`,
+      );
+    }
+    throw new Error(
+      'Could not reach the local model engine. Check that it is running, then try again.',
+    );
+  }
+}
 
 async function ensureRuntime(): Promise<boolean> {
   try {
@@ -101,18 +123,22 @@ export class OpenCodeAdapter implements LLMAdapter {
 
     const started = Date.now();
 
-    const sessionResponse = await fetch(`${BASE_URL}/session`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'silex' }),
-      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
-    });
+    const sessionResponse = await timedFetch(
+      `${BASE_URL}/session`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'silex' }),
+      },
+      Math.min(CALL_TIMEOUT_MS, 15000),
+      'Opening a session with the local engine',
+    );
     if (!sessionResponse.ok) {
       throw new Error('Could not open a session with the local runtime.');
     }
     const session = (await sessionResponse.json()) as { id: string };
 
-    const messageResponse = await fetch(
+    const messageResponse = await timedFetch(
       `${BASE_URL}/session/${session.id}/message`,
       {
         method: 'POST',
@@ -123,8 +149,9 @@ export class OpenCodeAdapter implements LLMAdapter {
           tools: {},
           parts: [{ type: 'text', text: input.prompt }],
         }),
-        signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       },
+      CALL_TIMEOUT_MS,
+      'The local model',
     );
     if (!messageResponse.ok) {
       const body = (await messageResponse.text()).slice(0, 300);

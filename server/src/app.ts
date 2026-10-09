@@ -186,6 +186,7 @@ export function createApp(adapter: LLMAdapter) {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'The test could not be completed.';
+      console.error(`[silex] test failed for agent "${agent.name}":`, message);
       return context.json({ error: message }, 503);
     }
   });

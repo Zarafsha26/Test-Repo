@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, History, MessageSquare, Play, Target, ShieldCheck, Activity } from 'lucide-react';
+import {
+  AlertCircle,
+  AlertTriangle,
+  Bot,
+  History,
+  Lightbulb,
+  MessageSquare,
+  Play,
+  RefreshCw,
+  Target,
+  ShieldCheck,
+  Activity,
+} from 'lucide-react';
 import {
   api,
   type AgentSummary,
@@ -47,6 +59,7 @@ export function TestPage({
   const [result, setResult] = useState<{ test: TestRecord; issue: Issue | null } | null>(
     null,
   );
+  const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<TestRecord[]>([]);
   const resultRef = useRef<HTMLDivElement | null>(null);
 
@@ -84,6 +97,7 @@ export function TestPage({
     if (!canRun) return;
     setRunning(true);
     setResult(null);
+    setError(null);
     try {
       const data = await api.runTest(agentId, scenario.trim());
       setResult(data);
@@ -91,7 +105,10 @@ export function TestPage({
       onIssueDetected();
       if (data.issue) onToast(`Detected: ${data.issue.title}`);
     } catch (error) {
-      onToast(error instanceof Error ? error.message : 'The test could not be run.');
+      const message =
+        error instanceof Error ? error.message : 'The test could not be run.';
+      setError(message);
+      onToast(message);
     } finally {
       setRunning(false);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 60);
@@ -170,6 +187,30 @@ export function TestPage({
         </div>
       </Card>
 
+      {error && !running ? (
+        <div ref={resultRef} className="fade-up">
+          <Card className="px-6 py-6">
+            <div className="flex flex-wrap items-start gap-4">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-risk-soft text-risk">
+                <AlertCircle className="h-5 w-5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-ink">Test did not complete</p>
+                <p className="mt-1 text-sm leading-relaxed text-ink-soft">{error}</p>
+                <p className="mt-1.5 text-xs text-ink-faint">
+                  Nothing was saved to test history for this run. Your scenario is still
+                  below — press Retry to run it again.
+                </p>
+              </div>
+              <PrimaryButton onClick={() => void run()}>
+                <RefreshCw className="h-4 w-4" />
+                Retry test
+              </PrimaryButton>
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
       {result ? (
         <div ref={resultRef} className="fade-up space-y-4">
           <Card className="px-6 py-6">
@@ -221,6 +262,32 @@ export function TestPage({
                 “{result.test.explanation}”
               </p>
             </div>
+
+            {result.issue ? (
+              <div className="mt-5 rounded-xl border border-risk/25 bg-risk-soft px-4 py-3.5">
+                <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-risk">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Finding
+                </p>
+                <p className="mt-1.5 text-sm font-semibold text-ink">
+                  {result.issue.title}
+                </p>
+                <p className="mt-1 text-sm leading-relaxed text-ink-soft">
+                  {result.issue.whatHappened}
+                </p>
+                <p className="mt-4 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-risk">
+                  <Lightbulb className="h-3.5 w-3.5" /> Recommended action
+                </p>
+                <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
+                  {result.issue.recommendation}
+                </p>
+                <button
+                  onClick={() => onOpenIssue(result.issue!)}
+                  className="mt-3 text-[13px] font-medium text-risk underline-offset-2 hover:underline"
+                >
+                  View full details →
+                </button>
+              </div>
+            ) : null}
 
             <div className="mt-5">
               <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">

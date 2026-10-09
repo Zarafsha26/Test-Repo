@@ -100,14 +100,28 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+const RUN_TEST_TIMEOUT_MS = 150_000;
+
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs?: number,
+): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
       headers: { 'Content-Type': 'application/json' },
       ...init,
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     });
-  } catch {
+  } catch (error) {
+    if (timeoutMs && (error as Error)?.name === 'TimeoutError') {
+      const seconds = Math.round(timeoutMs / 1000);
+      throw new ApiError(
+        `The test timed out after ${seconds} second${seconds === 1 ? '' : 's'}. The local engine may be busy — try running it again.`,
+        0,
+      );
+    }
     throw new ApiError('Cannot reach Silex. Is the server running?', 0);
   }
   const payload = await response.json().catch(() => ({}));
@@ -135,10 +149,14 @@ export const api = {
       `/api/tests${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ''}`,
     ),
   runTest: (agentId: string, scenario: string) =>
-    request<{ test: TestRecord; issue: Issue | null }>('/api/tests', {
-      method: 'POST',
-      body: JSON.stringify({ agentId, scenario }),
-    }),
+    request<{ test: TestRecord; issue: Issue | null }>(
+      '/api/tests',
+      {
+        method: 'POST',
+        body: JSON.stringify({ agentId, scenario }),
+      },
+      RUN_TEST_TIMEOUT_MS,
+    ),
   issues: () => request<{ items: Issue[]; total: number }>('/api/issues'),
   issue: (id: string) =>
     request<{ issue: Issue; test: TestRecord | null }>(`/api/issues/${id}`),
