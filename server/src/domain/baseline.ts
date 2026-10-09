@@ -2,7 +2,19 @@ import { callAgentEndpoint, type LLMAdapter } from '../ai/adapter';
 import { allAgents, type AgentDefinition } from './agents';
 import { evaluate } from '../eval/evaluator';
 import { store } from '../store/store';
-import type { Issue, TestRecord } from './types';
+import type { Issue, TestEngine, TestRecord } from './types';
+
+export class TestExecutionError extends Error {
+  readonly stage: 'connection' | 'execution' | 'review';
+  readonly record: TestRecord;
+
+  constructor(stage: 'connection' | 'execution' | 'review', message: string, record: TestRecord) {
+    super(message);
+    this.name = 'TestExecutionError';
+    this.stage = stage;
+    this.record = record;
+  }
+}
 
 export const BASELINE_PROBES: Array<{
   agentId: string;
@@ -77,6 +89,9 @@ let state: CalibrationState = { done: 0, total: 0, running: false };
 
 export const calibrationState = (): CalibrationState => ({ ...state });
 
+const engineFor = (agent: AgentDefinition): TestEngine =>
+  agent.connection ? 'external' : 'local';
+
 async function runOne(
   adapter: LLMAdapter,
   agent: AgentDefinition,
@@ -84,7 +99,15 @@ async function runOne(
   source: TestRecord['source'],
   criteria?: string[],
 ): Promise<void> {
-  const result = await adapter.chat({ system: agent.system, prompt: scenario });
+  const engine = engineFor(agent);
+  const result = agent.connection
+    ? await callAgentEndpoint({
+        connection: agent.connection,
+        agentName: agent.name,
+        purpose: agent.description,
+        prompt: scenario,
+      })
+    : await adapter.chat({ system: agent.system, prompt: scenario });
   const outcome = await evaluate({
     adapter,
     agent,
@@ -93,6 +116,7 @@ async function runOne(
     tokens: result.tokens,
     latencyMs: result.latencyMs,
     source,
+    engine,
     criteria,
   });
 
@@ -132,30 +156,94 @@ export async function runCalibration(adapter: LLMAdapter): Promise<void> {
   state = { ...state, running: false, total: 0 };
 }
 
+function errorRecord(params: {
+  agent: AgentDefinition;
+  scenario: string;
+  stage: 'connection' | 'execution' | 'review';
+  message: string;
+  latencyMs: number;
+}): TestRecord {
+  return {
+    id: `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    agentId: params.agent.id,
+    agentName: params.agent.name,
+    scenario: params.scenario,
+    response: '',
+    scores: { accuracy: 0, safety: 0, reliability: 0, consistency: 0 },
+    overall: 0,
+    passed: false,
+    explanation: `This run did not complete: ${params.message}`,
+    latencyMs: params.latencyMs,
+    tokens: 0,
+    costUsd: 0,
+    createdAt: Date.now(),
+    source: 'manual',
+    issueId: null,
+    status: 'error',
+    error: { stage: params.stage, message: params.message },
+    engine: engineFor(params.agent),
+    checks: [],
+  };
+}
+
+function terminalError(
+  agent: AgentDefinition,
+  scenario: string,
+  stage: 'connection' | 'execution' | 'review',
+  message: string,
+  latencyMs: number,
+): TestExecutionError {
+  const record = errorRecord({ agent, scenario, stage, message, latencyMs });
+  store.addTest(record, null);
+  return new TestExecutionError(stage, message, record);
+}
+
 export async function runTest(
   adapter: LLMAdapter,
   agent: AgentDefinition,
   scenario: string,
   criteria?: string[],
 ): Promise<{ record: TestRecord; issue: Issue | null }> {
-  const result = agent.connection
-    ? await callAgentEndpoint({
-        connection: agent.connection,
-        agentName: agent.name,
-        purpose: agent.description,
-        prompt: scenario,
-      })
-    : await adapter.chat({ system: agent.system, prompt: scenario });
-  const outcome = await evaluate({
-    adapter,
-    agent,
-    scenario,
-    response: result.text,
-    tokens: result.tokens,
-    latencyMs: result.latencyMs,
-    source: 'manual',
-    criteria,
-  });
+  const startedAt = Date.now();
+  const engine = engineFor(agent);
+
+  let result;
+  try {
+    result = agent.connection
+      ? await callAgentEndpoint({
+          connection: agent.connection,
+          agentName: agent.name,
+          purpose: agent.description,
+          prompt: scenario,
+        })
+      : await adapter.chat({ system: agent.system, prompt: scenario });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'The agent could not be reached.';
+    const stage = agent.connection ? 'connection' : 'execution';
+    throw terminalError(agent, scenario, stage, message, Date.now() - startedAt);
+  }
+
+  let outcome;
+  try {
+    outcome = await evaluate({
+      adapter,
+      agent,
+      scenario,
+      response: result.text,
+      tokens: result.tokens,
+      latencyMs: result.latencyMs,
+      source: 'manual',
+      engine,
+      criteria,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'The review could not be completed, so no score was recorded.';
+    throw terminalError(agent, scenario, 'review', message, Date.now() - startedAt);
+  }
 
   let issue: Issue | null = null;
   if (outcome.issue) {

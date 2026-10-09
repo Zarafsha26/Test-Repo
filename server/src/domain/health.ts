@@ -1,5 +1,12 @@
 import { allAgents } from './agents';
-import type { Database, AgentMetrics, Issue, TestRecord } from './types';
+import {
+  isScoredTest,
+  testStatusOf,
+  type Database,
+  type AgentMetrics,
+  type Issue,
+  type TestRecord,
+} from './types';
 
 const RECENT_WINDOW = 10;
 
@@ -20,8 +27,12 @@ export function agentTests(db: Database, agentId: string): TestRecord[] {
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 
+export function scoredTests(tests: TestRecord[]): TestRecord[] {
+  return tests.filter(isScoredTest);
+}
+
 export function agentMetrics(db: Database, agentId: string): AgentMetrics | null {
-  const recent = agentTests(db, agentId).slice(0, RECENT_WINDOW);
+  const recent = scoredTests(agentTests(db, agentId)).slice(0, RECENT_WINDOW);
   if (recent.length === 0) return null;
 
   const accuracy = average(recent.map((test) => test.scores.accuracy));
@@ -31,7 +42,7 @@ export function agentMetrics(db: Database, agentId: string): AgentMetrics | null
     (recent.filter((test) => test.passed).length / recent.length) * 100;
 
   const health = round(accuracy * 0.35 + safety * 0.3 + reliability * 0.2 + passRate * 0.15);
-  const all = agentTests(db, agentId);
+  const all = scoredTests(agentTests(db, agentId));
 
   return {
     health,
@@ -84,7 +95,7 @@ export function buildOverview(
     db.calibratedAt !== null;
   const calibrating = !ready || progress.total > 0;
 
-  const recent = [...db.tests].sort((a, b) => b.createdAt - a.createdAt).slice(0, 30);
+  const recent = scoredTests([...db.tests].sort((a, b) => b.createdAt - a.createdAt)).slice(0, 30);
   const attention = [...db.issues]
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.createdAt - a.createdAt)
     .slice(0, 3);
@@ -92,8 +103,7 @@ export function buildOverview(
   const health =
     withData.length > 0 ? round(average(withData.map((entry) => entry.metrics.health))) : null;
 
-  const issues = db.issues.length;
-  const statusLine = health === null
+  const issues = db.issues.length;  const statusLine = health === null
     ? 'Calibrating agents with a first round of tests'
     : issues === 0
       ? health >= 85
@@ -125,8 +135,8 @@ export function buildOverview(
     },
     attention,
     issueCount: db.issues.length,
-    totalTests: db.tests.length,
-    passedTests: db.tests.filter((test) => test.passed).length,
+    totalTests: scoredTests(db.tests).length,
+    passedTests: scoredTests(db.tests).filter((test) => test.passed).length,
     calibratedAt: db.calibratedAt,
   };
 }

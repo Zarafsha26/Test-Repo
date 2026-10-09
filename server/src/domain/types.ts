@@ -25,6 +25,21 @@ export type Scores = {
   consistency: number;
 };
 
+export type TestStatus = 'completed' | 'error';
+
+export type TestEngine = 'local' | 'external';
+
+export type TestError = {
+  stage: 'connection' | 'execution' | 'review';
+  message: string;
+};
+
+export type CriterionCheck = {
+  criterion: string;
+  met: boolean;
+  evidence: string;
+};
+
 export type TestRecord = {
   id: string;
   agentId: string;
@@ -40,7 +55,18 @@ export type TestRecord = {
   createdAt: number;
   source: 'baseline' | 'manual';
   issueId: string | null;
+  status?: TestStatus;
+  error?: TestError | null;
+  engine?: TestEngine;
+  agentName?: string;
+  checks?: CriterionCheck[];
 };
+
+export const testStatusOf = (test: TestRecord): TestStatus =>
+  test.status ?? 'completed';
+
+export const isScoredTest = (test: TestRecord): boolean =>
+  testStatusOf(test) === 'completed';
 
 export type CustomAgent = {
   id: string;

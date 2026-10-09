@@ -8,9 +8,25 @@ export type Scores = {
   consistency: number;
 };
 
+export type TestStatus = 'completed' | 'error';
+
+export type TestEngine = 'local' | 'external';
+
+export type TestError = {
+  stage: 'connection' | 'execution' | 'review';
+  message: string;
+};
+
+export type CriterionCheck = {
+  criterion: string;
+  met: boolean;
+  evidence: string;
+};
+
 export type TestRecord = {
   id: string;
   agentId: string;
+  agentName?: string;
   scenario: string;
   response: string;
   scores: Scores;
@@ -23,6 +39,10 @@ export type TestRecord = {
   createdAt: number;
   source: 'baseline' | 'manual';
   issueId: string | null;
+  status?: TestStatus;
+  error?: TestError | null;
+  engine?: TestEngine;
+  checks?: CriterionCheck[];
 };
 
 export type Issue = {
@@ -59,6 +79,7 @@ export type AgentSummary = {
   role: string;
   description: string;
   connection?: string;
+  engine?: TestEngine;
   metrics: AgentMetrics | null;
   status?: string;
 };
@@ -93,11 +114,32 @@ export type Status = {
   calibration: { done: number; total: number; running: boolean };
 };
 
+export type DiagnosticStep = {
+  name: string;
+  ok: boolean;
+  detail: string;
+};
+
+export type ConnectionDiagnostic = {
+  engine: TestEngine;
+  ok: boolean;
+  url: string;
+  steps: DiagnosticStep[];
+};
+
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  stage?: string;
+  test?: TestRecord;
+  constructor(
+    message: string,
+    status: number,
+    extra?: { stage?: string; test?: TestRecord },
+  ) {
     super(message);
     this.status = status;
+    this.stage = extra?.stage;
+    this.test = extra?.test;
   }
 }
 
@@ -127,10 +169,15 @@ async function request<T>(
   }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new ApiError(
-      (payload as { error?: string }).error ?? 'Something went wrong.',
-      response.status,
-    );
+    const details = payload as {
+      error?: string;
+      stage?: string;
+      test?: TestRecord;
+    };
+    throw new ApiError(details.error ?? 'Something went wrong.', response.status, {
+      stage: details.stage,
+      test: details.test,
+    });
   }
   return payload as T;
 }
@@ -157,6 +204,12 @@ export const api = {
       method: 'DELETE',
     }),
   agent: (id: string) => request<AgentDetail>(`/api/agents/${id}`),
+  diagnose: (id: string) =>
+    request<ConnectionDiagnostic>(
+      `/api/agents/${encodeURIComponent(id)}/diagnose`,
+      { method: 'POST' },
+      15_000,
+    ),
   tests: (agentId?: string) =>
     request<{ items: TestRecord[] }>(
       `/api/tests${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ''}`,

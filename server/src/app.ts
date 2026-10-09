@@ -6,15 +6,19 @@ import {
   agentMetrics,
   agentTests,
   buildOverview,
+  scoredTests,
   severityRank,
 } from './domain/health';
 import {
   calibrationState,
   runCalibration,
   runTest,
+  TestExecutionError,
 } from './domain/baseline';
+import { diagnoseConnection, isValidHttpUrl, redactCredentials } from './ai/connection';
 import { store } from './store/store';
 import type { LLMAdapter } from './ai/adapter';
+import { testStatusOf, type TestRecord } from './domain/types';
 
 type Env = { Variables: { adapter: LLMAdapter } };
 
@@ -65,36 +69,33 @@ function validateAgentBody(body: unknown): AgentInput | { error: string } {
   if (purpose.length < 3 || purpose.length > 200) {
     return { error: 'Describe the purpose in 3 to 200 characters.' };
   }
-  if (connection) {
-    try {
-      const url = new URL(connection);
-      if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
-    } catch {
-      return {
-        error:
-          'Enter a valid connection URL starting with http:// or https://, or leave it empty to use the local engine.',
-      };
-    }
+  if (connection && !isValidHttpUrl(connection)) {
+    return {
+      error:
+        'Enter a valid connection URL starting with http:// or https://, or leave it empty to use the local engine.',
+    };
   }
   return { name, purpose, connection };
 }
 
 async function probeConnection(url: string): Promise<string | null> {
-  try {
-    await fetch(url, {
-      method: 'HEAD',
-      signal: AbortSignal.timeout(3000),
-      redirect: 'follow',
-    });
-    return null;
-  } catch (error) {
-    const name = (error as Error)?.name;
-    const timedOut = name === 'TimeoutError' || name === 'AbortError';
-    return timedOut
-      ? `We could not reach ${url} within 3 seconds. Check the connection URL, or leave it empty to use the local engine.`
-      : `We could not reach ${url}. Check the connection URL, or leave it empty to use the local engine.`;
-  }
+  const safeUrl = redactCredentials(url);
+  const diagnostic = await diagnoseConnection(url);
+  const failed = diagnostic.steps.find((step) => !step.ok);
+  if (!failed) return null;
+  return `${failed.detail} (${safeUrl})`;
 }
+
+const presentTest = (test: TestRecord): TestRecord => {
+  const agent = agentById(test.agentId);
+  return {
+    ...test,
+    status: testStatusOf(test),
+    engine: test.engine ?? (agent?.connection ? 'external' : 'local'),
+    agentName: test.agentName ?? agent?.name ?? 'Removed agent',
+    error: test.error ?? null,
+  };
+};
 
 export function createApp(adapter: LLMAdapter) {
   const app = new Hono<Env>();
@@ -130,7 +131,8 @@ export function createApp(adapter: LLMAdapter) {
       name: agent.name,
       role: agent.role,
       description: agent.description,
-      connection: agent.connection ?? '',
+      connection: redactCredentials(agent.connection ?? ''),
+      engine: agent.connection ? ('external' as const) : ('local' as const),
       metrics: agentMetrics(db, agent.id),
       status: agentStatus(db, agent),
     }));
@@ -177,20 +179,21 @@ export function createApp(adapter: LLMAdapter) {
     const agent = agentById(context.req.param('id'));
     if (!agent) return context.json({ error: 'Agent not found.' }, 404);
     const db = store.read();
-    const recent = agentTests(db, agent.id).slice(0, 5);
+    const recent = agentTests(db, agent.id).slice(0, 5).map(presentTest);
     return context.json({
       id: agent.id,
       name: agent.name,
       role: agent.role,
       description: agent.description,
-      connection: agent.connection ?? '',
+      connection: redactCredentials(agent.connection ?? ''),
+      engine: agent.connection ? 'external' : 'local',
       metrics: agentMetrics(db, agent.id),
       status: agentStatus(db, agent),
       recentTests: recent,
-      recentFailures: agentTests(db, agent.id)
+      recentFailures: scoredTests(agentTests(db, agent.id))
         .filter((test) => !test.passed)
         .slice(0, 3)
-        ,
+        .map(presentTest),
     });
   });
 
@@ -206,14 +209,23 @@ export function createApp(adapter: LLMAdapter) {
       return context.json({ error: 'The request body could not be read.' }, 400);
     }
 
+    const existingConnection = agent.connection ?? '';
+    let nextConnection = existingConnection;
+    if (body.connection !== undefined) {
+      const raw = typeof body.connection === 'string' ? body.connection.trim() : '';
+      nextConnection =
+        existingConnection && raw === redactCredentials(existingConnection)
+          ? existingConnection
+          : raw;
+    }
     const merged = {
       name: body.name !== undefined ? body.name : agent.name,
       purpose: body.purpose !== undefined ? body.purpose : agent.description,
-      connection: body.connection !== undefined ? body.connection : (agent.connection ?? ''),
+      connection: nextConnection,
     };
     const input = validateAgentBody(merged);
     if (isInputError(input)) return context.json({ error: input.error }, 400);
-    const connectionChanged = input.connection !== (agent.connection ?? '');
+    const connectionChanged = input.connection !== existingConnection;
     if (input.connection && connectionChanged) {
       const probeError = await probeConnection(input.connection);
       if (probeError) return context.json({ error: probeError }, 400);
@@ -234,10 +246,35 @@ export function createApp(adapter: LLMAdapter) {
         name: current.name,
         role: current.role,
         description: current.description,
-        connection: current.connection ?? '',
+        connection: redactCredentials(current.connection ?? ''),
+        engine: current.connection ? 'external' : 'local',
         metrics: agentMetrics(db, current.id),
         status: agentStatus(db, current),
       },
+    });
+  });
+
+  app.post('/api/agents/:id/diagnose', async (context) => {
+    const agent = agentById(context.req.param('id'));
+    if (!agent) return context.json({ error: 'Agent not found.' }, 404);
+
+    if (agent.connection) {
+      const diagnostic = await diagnoseConnection(agent.connection);
+      return context.json({ engine: 'external' as const, ...diagnostic });
+    }
+
+    const status = await context.get('adapter').status();
+    return context.json({
+      engine: 'local' as const,
+      ok: status.available,
+      url: '',
+      steps: [
+        {
+          name: 'Local model engine',
+          ok: status.available,
+          detail: status.detail,
+        },
+      ],
     });
   });
 
@@ -261,7 +298,7 @@ export function createApp(adapter: LLMAdapter) {
       .filter((test) => !agentId || test.agentId === agentId)
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, 25)
-      ;
+      .map(presentTest);
     return context.json({ items });
   });
 
@@ -272,7 +309,7 @@ export function createApp(adapter: LLMAdapter) {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'The request could not be read.';
-      return context.json({ error: message }, 400);
+      return context.json({ error: message, stage: 'request' }, 400);
     }
 
     const agent = agentById(input.agentId)!;
@@ -282,12 +319,26 @@ export function createApp(adapter: LLMAdapter) {
         agent,
         input.scenario,
       );
-      return context.json({ test: record, issue }, 201);
+      return context.json({ test: presentTest(record), issue }, 201);
     } catch (error) {
+      if (error instanceof TestExecutionError) {
+        console.error(
+          `[silex] test ${error.stage} failure for agent "${agent.name}":`,
+          error.message,
+        );
+        return context.json(
+          {
+            error: error.message,
+            stage: error.stage,
+            test: presentTest(error.record),
+          },
+          503,
+        );
+      }
       const message =
         error instanceof Error ? error.message : 'The test could not be completed.';
       console.error(`[silex] test failed for agent "${agent.name}":`, message);
-      return context.json({ error: message }, 503);
+      return context.json({ error: message, stage: 'execution' }, 503);
     }
   });
 
@@ -305,7 +356,7 @@ export function createApp(adapter: LLMAdapter) {
     const issue = store.listIssues().find((item) => item.id === context.req.param('id'));
     if (!issue) return context.json({ error: 'Issue not found.' }, 404);
     const test = store.read().tests.find((item) => item.id === issue.testId);
-    return context.json({ issue, test: test ?? null });
+    return context.json({ issue, test: test ? presentTest(test) : null });
   });
 
   app.post('/api/calibrate', async (context) => {

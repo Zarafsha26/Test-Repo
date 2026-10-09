@@ -3,6 +3,7 @@ import {
   AlertCircle,
   ArrowLeft,
   Bot,
+  Check,
   ChevronRight,
   ClipboardList,
   Coins,
@@ -11,6 +12,7 @@ import {
   Settings,
   Timer,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   Area,
@@ -19,7 +21,14 @@ import {
   Tooltip,
   XAxis,
 } from 'recharts';
-import { api, type AgentDetail, type AgentSummary, type Issue } from '../lib/api';
+import {
+  api,
+  type AgentDetail,
+  type AgentSummary,
+  type ConnectionDiagnostic,
+  type Issue,
+  type TestRecord,
+} from '../lib/api';
 import {
   Card,
   EmptyState,
@@ -48,6 +57,9 @@ function timeAgo(timestamp: number): string {
   if (hours < 24) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
 }
+
+const isErrorRun = (test: TestRecord): boolean =>
+  (test.status ?? 'completed') === 'error';
 
 function StatusBadge({ agent }: { agent: AgentSummary }) {
   if (agent.metrics) return <StatusPill status={agent.metrics.status} />;
@@ -495,12 +507,12 @@ function AgentDetailPage({
                 <ScoreRow label="Reliability" value={metrics.reliability} />
               </div>
             </div>
-            {detail.recentTests.length >= 2 ? (
+            {detail.recentTests.filter((test) => !isErrorRun(test)).length >= 2 ? (
               <div className="mt-6 border-t border-line-soft pt-5">
                 <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
                   Score trend
                 </p>
-                <ScoreTrend tests={detail.recentTests} />
+                <ScoreTrend tests={detail.recentTests.filter((test) => !isErrorRun(test))} />
               </div>
             ) : null}
           </Card>
@@ -574,19 +586,31 @@ function AgentDetailPage({
             {detail.recentTests.map((test) => (
               <div key={test.id} className="flex items-center gap-4 px-5 py-3.5">
                 <span
-                  className={`h-2 w-2 shrink-0 rounded-full ${test.passed ? 'bg-good' : 'bg-risk'}`}
+                  className={`h-2 w-2 shrink-0 rounded-full ${
+                    isErrorRun(test)
+                      ? 'bg-ink-faint'
+                      : test.passed
+                        ? 'bg-good'
+                        : 'bg-risk'
+                  }`}
                 />
                 <p className="min-w-0 flex-1 truncate text-sm text-ink-soft">
                   {test.scenario}
                 </p>
                 <span className="text-xs text-ink-faint">{timeAgo(test.createdAt)}</span>
                 <span
-                  className={`w-12 text-right text-xs font-semibold ${test.passed ? 'text-good' : 'text-risk'}`}
+                  className={`w-12 text-right text-xs font-semibold ${
+                    isErrorRun(test)
+                      ? 'text-ink-faint'
+                      : test.passed
+                        ? 'text-good'
+                        : 'text-risk'
+                  }`}
                 >
-                  {test.passed ? 'PASS' : 'FAIL'}
+                  {isErrorRun(test) ? 'ERROR' : test.passed ? 'PASS' : 'FAIL'}
                 </span>
                 <span className="w-10 text-right text-xs font-medium text-ink">
-                  {test.overall}
+                  {isErrorRun(test) ? '—' : test.overall}
                 </span>
               </div>
             ))}
@@ -666,6 +690,24 @@ function AgentSettingsModal({
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [diagnostic, setDiagnostic] = useState<ConnectionDiagnostic | null>(null);
+
+  const connectionDirty = connection.trim() !== (agent.connection ?? '');
+
+  const checkConnection = async () => {
+    setChecking(true);
+    setDiagnostic(null);
+    try {
+      setDiagnostic(await api.diagnose(agent.id));
+    } catch (error) {
+      setFormError(
+        error instanceof Error ? error.message : 'Could not check the connection.',
+      );
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const inputClass =
     'mt-1.5 w-full rounded-lg border border-line bg-[#fcfcfd] px-3.5 py-2.5 text-sm text-ink placeholder:text-ink-faint focus:border-[#d0d5dd] focus:bg-white focus:outline-none focus:ring-2 focus:ring-ink/10';
@@ -768,13 +810,61 @@ function AgentSettingsModal({
             <input
               id="settings-agent-connection"
               value={connection}
-              onChange={(event) => setConnection(event.target.value)}
+              onChange={(event) => {
+                setConnection(event.target.value);
+                setDiagnostic(null);
+              }}
               placeholder="https://your-agent.example.com/test — or leave empty"
               className={inputClass}
             />
-            <p className="mt-1.5 text-xs text-ink-faint">
-              Point Silex at where your agent runs. Leave empty to test with the local engine.
-            </p>
+            <div className="mt-1.5 flex items-start justify-between gap-3">
+              <p className="text-xs text-ink-faint">
+                {agent.engine === 'external'
+                  ? 'This agent runs at an external endpoint. Credentials are stored privately and never shown back.'
+                  : 'Leave empty to test with the local engine.'}
+              </p>
+              <button
+                onClick={() => void checkConnection()}
+                disabled={checking || connectionDirty}
+                title={
+                  connectionDirty
+                    ? 'Save changes first to check the updated address'
+                    : 'Check that Silex can reach this agent'
+                }
+                className="shrink-0 rounded-lg border border-line px-2.5 py-1 text-xs font-medium text-ink-soft transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {checking ? 'Checking…' : 'Check connection'}
+              </button>
+            </div>
+            {connectionDirty ? (
+              <p className="mt-1 text-xs text-fair">Save changes first to check the updated address.</p>
+            ) : null}
+            {diagnostic ? (
+              <div className="mt-2 space-y-1.5 rounded-xl border border-line-soft bg-[#f8f9fb] px-3.5 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
+                  {diagnostic.engine === 'external' ? 'Endpoint check' : 'Local engine check'}
+                </p>
+                {diagnostic.steps.map((step) => (
+                  <div key={step.name} className="flex items-start gap-2 text-sm">
+                    <span
+                      className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${
+                        step.ok ? 'bg-good text-white' : 'bg-risk text-white'
+                      }`}
+                    >
+                      {step.ok ? (
+                        <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                      ) : (
+                        <X className="h-2.5 w-2.5" strokeWidth={3} />
+                      )}
+                    </span>
+                    <span className="min-w-0 text-ink-soft">
+                      <span className="font-medium text-ink">{step.name}</span>
+                      <span className="block text-xs leading-snug">{step.detail}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
           {formError ? (
             <div className="flex items-start gap-2 rounded-lg bg-risk-soft px-3 py-2.5 text-[13px] text-risk">

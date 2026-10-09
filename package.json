@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "bun run --cwd server dev",
     "build": "bun run --cwd web build",
-    "start": "bun run --cwd server start"
+    "start": "bun run --cwd server start",
+    "test": "bun run --cwd server test"
   }
 }
